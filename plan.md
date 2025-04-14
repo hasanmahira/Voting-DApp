@@ -31,6 +31,10 @@ npx hardhat init
 cd contracts/
 touch VotingCore.sol ProposalManager.sol Delegation.sol TokenRegistry.sol
 ```
+- [x] Create base contract files
+- [x] Implement contract architecture
+- [x] Define state variables and structs
+- [x] Set up access control mechanisms
 
 #### Day 3-5: Implement Core Functions
 - [ ] Create VotingCore.sol with base voting functionality
