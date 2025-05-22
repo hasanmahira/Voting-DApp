@@ -10,18 +10,30 @@ interface IProposalManager {
     event ProposalCreated(uint256 proposalId, address proposer);
     event ProposalExecuted(uint256 proposalId);
     event ProposalCanceled(uint256 proposalId);
+    event ProposalScheduled(uint256 indexed proposalId, bytes32 indexed timelockId, address[] targets, uint256[] values, bytes[] calldatas, uint256 delay); // New event
     
     // Enums
-    enum ProposalState { Pending, Active, Canceled, Defeated, Succeeded, Queued, Expired, Executed }
+    // Succeeded and Expired are less relevant from ProposalManager's perspective with TimelockController
+    enum ProposalState { Pending, Active, Canceled, Defeated, Queued, Executed } 
     
     // Structs
-    struct ProposalAction {
-        address target;
-        uint256 value;
-        bytes calldata;
+    // ProposalAction struct was unused by any function in this interface.
+    struct ProposalData {
+        uint256 id;
+        address proposer;
+        uint256 startBlock;
+        uint256 endBlock;
+        string title;
+        string description;
+        string ipfsHash;
+        bool canceled;
+        bool executed;
+        bytes32 timelockId;
     }
     
     // Functions
+    function setTimelock(address _timelock) external; // New function
+
     function createProposal(
         string memory title,
         string memory description,
@@ -46,4 +58,6 @@ interface IProposalManager {
         uint256[] memory values,
         bytes[] memory calldatas
     );
+
+    function getProposal(uint256 proposalId) external view returns (ProposalData memory); // New function
 }
