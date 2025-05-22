@@ -43,6 +43,7 @@ contract VotingCore is IVotingCore, Ownable, ReentrancyGuard {
         uint256 forVotes;
         uint256 againstVotes;
         uint256 abstainVotes;
+        bool queued; // True if successfully sent to ProposalManager.queueProposal()
         bool executed;
         mapping(address => Receipt) receipts;
     }
@@ -161,6 +162,7 @@ contract VotingCore is IVotingCore, Ownable, ReentrancyGuard {
         proposal.title = title;
         proposal.description = description;
         proposal.ipfsHash = ipfsHash;
+        proposal.queued = false; // Initialize new field
         proposal.executed = false;
         
         // Create proposal in proposal manager
@@ -220,12 +222,12 @@ contract VotingCore is IVotingCore, Ownable, ReentrancyGuard {
     }
     
     /**
-     * @notice Execute a successful proposal
+     * @notice Processes the vote outcome of a proposal and queues it with ProposalManager if passed.
      * @param proposalId ID of the proposal
      */
-    function executeProposal(uint256 proposalId) 
+    function processProposalVoteOutcomeAndQueue(uint256 proposalId) 
         external 
-        override 
+        override // Assuming this will replace executeProposal in IVotingCore
         nonReentrant 
         proposalExists(proposalId) 
     {
@@ -234,18 +236,50 @@ contract VotingCore is IVotingCore, Ownable, ReentrancyGuard {
         // Check if the proposal has ended
         require(block.number > proposal.endBlock, "VotingCore: voting period not ended");
         
-        // Check if the proposal has already been executed
+        // Check if the proposal has already been queued or executed
+        require(!proposal.queued, "VotingCore: proposal already queued");
         require(!proposal.executed, "VotingCore: proposal already executed");
         
         // Check if the proposal has passed (more for votes than against)
-        require(proposal.forVotes > proposal.againstVotes, "VotingCore: proposal not passed");
-        
+        if (proposal.forVotes > proposal.againstVotes) {
+            // Mark as queued
+            proposal.queued = true;
+            
+            // Queue through proposal manager
+            proposalManager.queueProposal(proposalId);
+            
+            emit ProposalQueuedForTimelock(proposalId);
+        } else {
+            // Optional: Add event for proposal defeated if needed
+            // For now, it simply means it's not queued and won't be executed.
+            // No specific state change needed if `queued` and `executed` remain false.
+        }
+    }
+
+    /**
+     * @notice Executes a proposal that has been successfully queued via ProposalManager.
+     * @param proposalId ID of the proposal
+     */
+    function executeQueuedProposal(uint256 proposalId) 
+        external 
+        nonReentrant // Assuming this will be a new function in IVotingCore
+        proposalExists(proposalId) 
+    {
+        Proposal storage proposal = _proposals[proposalId];
+
+        // Check if the proposal was queued
+        require(proposal.queued, "VotingCore: proposal not queued");
+        // Check if the proposal has already been executed
+        require(!proposal.executed, "VotingCore: proposal already executed");
+
+        // Execute through proposal manager
+        // ProposalManager's executeProposal will check if the timelock delay has passed
+        proposalManager.executeProposal(proposalId);
+
         // Mark as executed
         proposal.executed = true;
-        
-        // Execute through proposal manager
-        proposalManager.executeProposal(proposalId);
-        
+        proposal.queued = false; // Clear the queued flag as it's now executed
+
         emit ProposalExecuted(proposalId);
     }
     
@@ -270,6 +304,7 @@ contract VotingCore is IVotingCore, Ownable, ReentrancyGuard {
             uint256 forVotes,
             uint256 againstVotes,
             uint256 abstainVotes,
+            bool queued, // Add new field to return tuple
             bool executed
         ) 
     {
@@ -286,6 +321,7 @@ contract VotingCore is IVotingCore, Ownable, ReentrancyGuard {
             proposal.forVotes,
             proposal.againstVotes,
             proposal.abstainVotes,
+            proposal.queued, // Return new field
             proposal.executed
         );
     }
@@ -316,6 +352,14 @@ contract VotingCore is IVotingCore, Ownable, ReentrancyGuard {
         );
     }
     
+    // ================ Events from IVotingCore (implicitly) ================ //
+    // event ProposalCreated(uint256 proposalId, address proposer, string title);
+    // event VoteCast(address voter, uint256 proposalId, uint8 support, uint256 weight);
+    // event ProposalExecuted(uint256 proposalId);
+
+    // ================ Additional Events for VotingCore ================ //
+    event ProposalQueuedForTimelock(uint256 indexed proposalId); // New event
+
     // ================ Internal Functions ================ //
     
     /**

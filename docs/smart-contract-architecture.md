@@ -15,11 +15,14 @@ The Voting DApp smart contract system uses a modular design pattern with separat
                          │                   │
                          │                   │
                          ▼                   │
-┌──────────────┐  ┌─────────────────┐  ┌────────────────┐
-│              │  │                 │  │                │
-│Delegation.sol│◄─┤ProposalManager.sol│◄┤TokenRegistry.sol│
-│              │  │                 │  │                │
-└──────────────┘  └─────────────────┘  └────────────────┘
+┌──────────────┐  ┌─────────────────┐  ┌────────────────┐  ┌───────────────────┐
+│              │  │                 │  │                │  │                   │
+│Delegation.sol│◄─┤ProposalManager.sol├─►│ExecutionTimelock.sol│
+│              │  │                 │  │                │  │                   │
+└──────────────┘  └─────────────────┘  └────────────────┘  └───────────────────┘
+                         ▲
+                         └─────────────────┤TokenRegistry.sol│
+                                           └────────────────┘
 ```
 
 ### VotingCore.sol
@@ -65,6 +68,16 @@ Verifies token ownership and determines voting power.
 - Support multiple token types
 - Track token snapshots for specific proposals
 - Interface with external token contracts
+
+### ExecutionTimelock.sol
+
+Provides a time-delayed execution mechanism for approved proposals, enhancing security and allowing for a review period. This contract is based on OpenZeppelin's `TimelockController`.
+
+**Responsibilities:**
+- Enforce a minimum delay before an operation can be executed.
+- Manage roles for proposing (scheduling), executing, and canceling operations.
+- Provide functions to schedule, execute, and cancel operations.
+- Emit events for scheduled, executed, and canceled operations.
 
 ## Contract Interfaces
 
@@ -146,34 +159,57 @@ interface IVotingCore {
 ```solidity
 interface IProposalManager {
     // Events
-    event ProposalCreated(uint256 proposalId, address proposer);
-    event ProposalExecuted(uint256 proposalId);
+    event ProposalCreated(uint256 proposalId, address proposer); // Emitted by ProposalManager upon its internal ID creation
+    event ProposalScheduled(uint256 indexed proposalId, bytes32 indexed timelockId, address[] targets, uint256[] values, bytes[] calldatas, uint256 delay);
+    event ProposalExecuted(uint256 proposalId); // Emitted by ProposalManager after it calls execute on Timelock
     event ProposalCanceled(uint256 proposalId);
-    
+
+    // Enums
+    enum ProposalState { Pending, Active, Canceled, Defeated, Queued, Executed }
+
     // Structs
-    struct ProposalAction {
-        address target;
-        uint256 value;
-        bytes calldata;
+    struct ProposalData {
+        uint256 id; // ProposalManager's internal ID
+        address proposer; // Original proposer from VotingCore
+        uint256 startBlock;
+        uint256 endBlock;
+        string title;
+        string description;
+        string ipfsHash;
+        bool canceled;
+        bool executed;
+        bytes32 timelockId; // ID for the operation on ExecutionTimelock
     }
     
     // Functions
+    function setTimelock(address _timelock) external;
+
     function createProposal(
         string memory title,
         string memory description,
         string memory ipfsHash,
-        ProposalAction[] memory actions,
+        address[] memory targets,
+        uint256[] memory values,
+        bytes[] memory calldatas,
         uint256 startBlock,
         uint256 endBlock
-    ) external returns (uint256);
+    ) external returns (uint256); // Returns ProposalManager's internal proposalId
     
     function cancelProposal(uint256 proposalId) external;
     
-    function executeProposal(uint256 proposalId) external;
+    function queueProposal(uint256 proposalId) external; // Triggers schedule on ExecutionTimelock
     
-    function getProposalStatus(uint256 proposalId) external view returns (uint8);
+    function executeProposal(uint256 proposalId) external; // Triggers execute on ExecutionTimelock
     
-    function getProposalActions(uint256 proposalId) external view returns (ProposalAction[] memory);
+    function getProposalState(uint256 proposalId) external view returns (ProposalState);
+    
+    function getProposalActions(uint256 proposalId) external view returns (
+        address[] memory targets,
+        uint256[] memory values,
+        bytes[] memory calldatas
+    );
+
+    function getProposal(uint256 proposalId) external view returns (ProposalData memory);
 }
 ```
 
@@ -243,11 +279,11 @@ interface ITokenRegistry {
                                │
                                │
                                ▼
-                     ┌─────────────────┐       ┌────────────────┐
-                     │                 │       │                │
-                     │ ProposalManager ├──────►│ Target Contract│
-                     │                 │       │                │
-                     └─────────────────┘       └────────────────┘
+                     ┌─────────────────┐       ┌───────────────────┐       ┌────────────────┐
+                     │                 │       │                   │       │                │
+                     │ ProposalManager ├──────►│ExecutionTimelock.sol├──────►│ Target Contract│
+                     │                 │       │                   │       │                │
+                     └─────────────────┘       └───────────────────┘       └────────────────┘
 ```
 
 ## Design Patterns

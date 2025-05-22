@@ -4,6 +4,7 @@ pragma solidity ^0.8.0;
 import "./interfaces/IProposalManager.sol";
 import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/governance/TimelockController.sol"; // Provides ITimelockController
 
 /**
  * @title ProposalManager
@@ -22,21 +23,22 @@ contract ProposalManager is IProposalManager, AccessControl, ReentrancyGuard {
     mapping(uint256 => ProposalActionData) private _proposalActions;
     
     // Time delay before execution in seconds (default 2 days)
-    uint256 public executionDelay = 2 days;
+    // uint256 public executionDelay = 2 days; // Removed
+    
+    ITimelockController public timelock;
     
     // ================ Structs ================ //
     struct ProposalData {
-        uint256 id;
-        address proposer;
-        uint256 startBlock;
-        uint256 endBlock;
+        uint256 id; // Internal ID for ProposalManager, generated in createProposal
+        address proposer; // Original proposer from VotingCore
+        uint256 startBlock; // From VotingCore
+        uint256 endBlock; // From VotingCore
         string title;
         string description;
         string ipfsHash;
         bool canceled;
-        bool executed;
-        bool queued;
-        uint256 executionTime; // When the proposal can be executed
+        bool executed; // Marked true after executeBatch is successfully called
+        bytes32 timelockId; // Stores the salt used for scheduleBatch/executeBatch
     }
     
     struct ProposalActionData {
@@ -46,7 +48,8 @@ contract ProposalManager is IProposalManager, AccessControl, ReentrancyGuard {
     }
     
     // ================ Events ================ //
-    event ProposalQueued(uint256 indexed proposalId, uint256 executionTime);
+    // event ProposalQueued(uint256 indexed proposalId, uint256 executionTime); // Removed
+    event ProposalScheduled(uint256 indexed proposalId, bytes32 indexed timelockId, address[] targets, uint256[] values, bytes[] calldatas, uint256 delay);
     
     // ================ Modifiers ================ //
     modifier onlyCore() {
@@ -68,11 +71,13 @@ contract ProposalManager is IProposalManager, AccessControl, ReentrancyGuard {
     // ================ External Functions ================ //
     
     /**
-     * @notice Sets the execution delay
-     * @param newDelay New execution delay in seconds
+     * @notice Sets the timelock controller address
+     * @param _timelock Address of the ExecutionTimelock contract
      */
-    function setExecutionDelay(uint256 newDelay) external onlyRole(ADMIN_ROLE) {
-        executionDelay = newDelay;
+    function setTimelock(address _timelock) external onlyRole(ADMIN_ROLE) {
+        require(_timelock != address(0), "ProposalManager: invalid timelock address");
+        // Consider adding IERC165 interface check if necessary
+        timelock = ITimelockController(_timelock);
     }
     
     /**
@@ -154,8 +159,8 @@ contract ProposalManager is IProposalManager, AccessControl, ReentrancyGuard {
     }
     
     /**
-     * @notice Queues a proposal for execution after the time delay
-     * @param proposalId ID of the proposal to queue
+     * @notice Schedules a proposal for execution via the Timelock contract
+     * @param proposalId ID of the proposal to schedule
      */
     function queueProposal(uint256 proposalId)
         external
@@ -163,60 +168,82 @@ contract ProposalManager is IProposalManager, AccessControl, ReentrancyGuard {
         onlyCore
         proposalExists(proposalId)
     {
+        require(address(timelock) != address(0), "ProposalManager: Timelock not set");
         ProposalData storage proposal = _proposals[proposalId];
         
-        // Check that proposal hasn't been queued, canceled, or executed
-        require(!proposal.queued, "ProposalManager: already queued");
+        // Check that proposal hasn't been scheduled, canceled, or executed
+        require(proposal.timelockId == bytes32(0), "ProposalManager: already scheduled or processed");
         require(!proposal.canceled, "ProposalManager: proposal canceled");
         require(!proposal.executed, "ProposalManager: already executed");
         
-        // Set execution time
-        uint256 executionTime = block.timestamp + executionDelay;
-        proposal.executionTime = executionTime;
-        proposal.queued = true;
+        ProposalActionData storage actions = _proposalActions[proposalId];
+        require(actions.targets.length > 0, "ProposalManager: No actions to schedule");
+
+        bytes32 salt = keccak256(abi.encode(proposalId, block.timestamp)); // Unique salt
+        uint256 delay = timelock.getMinDelay();
+
+        timelock.scheduleBatch(
+            actions.targets,
+            actions.values,
+            actions.calldatas,
+            bytes32(0), // predecessor
+            salt,
+            delay
+        );
         
-        emit ProposalQueued(proposalId, executionTime);
+        proposal.timelockId = salt;
+        
+        emit ProposalScheduled(
+            proposalId,
+            salt,
+            actions.targets,
+            actions.values,
+            actions.calldatas,
+            delay
+        );
     }
     
     /**
-     * @notice Executes a passed proposal
+     * @notice Triggers the execution of a scheduled proposal via the Timelock contract
      * @param proposalId ID of the proposal to execute
      */
     function executeProposal(uint256 proposalId)
         external
         override
-        onlyCore
+        onlyCore // Or a more generic executor role if needed
         nonReentrant
         proposalExists(proposalId)
     {
+        require(address(timelock) != address(0), "ProposalManager: Timelock not set");
         ProposalData storage proposal = _proposals[proposalId];
         
         // Check that proposal can be executed
         require(!proposal.canceled, "ProposalManager: proposal canceled");
         require(!proposal.executed, "ProposalManager: already executed");
+        require(proposal.timelockId != bytes32(0), "ProposalManager: not scheduled");
         
-        // Check if queued and if execution delay has passed
-        if (proposal.queued) {
-            require(
-                block.timestamp >= proposal.executionTime,
-                "ProposalManager: execution time not reached"
-            );
-        }
+        // Check with timelock if ready for execution
+        // This also implicitly checks if the operation exists and is not yet executed by the timelock
+        require(timelock.isOperationReady(proposal.timelockId), "ProposalManager: Timelock operation not ready");
+
+        // Mark as executed in ProposalManager's context
+        // This prevents re-triggering from ProposalManager, actual execution state is on Timelock
+        proposal.executed = true; 
         
-        // Mark as executed
-        proposal.executed = true;
-        
-        // Get actions
         ProposalActionData storage actions = _proposalActions[proposalId];
         
-        // Execute each action
-        for (uint256 i = 0; i < actions.targets.length; i++) {
-            (bool success, bytes memory returnData) = actions.targets[i].call{value: actions.values[i]}(
-                actions.calldatas[i]
-            );
-            require(success, string(abi.encodePacked("ProposalManager: action ", i, " reverted: ", returnData)));
-        }
+        // Execute the batch via Timelock
+        // The `salt` used here is the `proposal.timelockId` stored during scheduling
+        timelock.executeBatch(
+            actions.targets,
+            actions.values,
+            actions.calldatas,
+            bytes32(0), // predecessor
+            proposal.timelockId // salt
+        );
         
+        // Note: TimelockController itself emits CallExecuted / CallSaltExecuted upon successful execution of each operation.
+        // ProposalExecuted here signifies that ProposalManager has successfully called executeBatch.
         emit ProposalExecuted(proposalId);
     }
     
@@ -232,9 +259,14 @@ contract ProposalManager is IProposalManager, AccessControl, ReentrancyGuard {
         proposalExists(proposalId)
         returns (ProposalState)
     {
+        require(address(timelock) != address(0), "ProposalManager: Timelock not set for state check");
         ProposalData storage proposal = _proposals[proposalId];
         
-        if (proposal.executed) {
+        if (proposal.executed) { // True if executeProposal was successfully called by ProposalManager
+            // Further check Timelock state if needed, but ProposalManager considers it done.
+            // If timelock.isOperationDone(proposal.timelockId) is true, it's definitively executed.
+            // If it's false, it means executeBatch might have reverted or is still in progress if it's a long tx.
+            // For simplicity, if PM.executed is true, we consider it Executed from PM's perspective.
             return ProposalState.Executed;
         }
         
@@ -242,6 +274,7 @@ contract ProposalManager is IProposalManager, AccessControl, ReentrancyGuard {
             return ProposalState.Canceled;
         }
         
+        // Voting period checks
         if (block.number <= proposal.startBlock) {
             return ProposalState.Pending;
         }
@@ -250,17 +283,39 @@ contract ProposalManager is IProposalManager, AccessControl, ReentrancyGuard {
             return ProposalState.Active;
         }
         
-        if (proposal.queued) {
-            if (block.timestamp >= proposal.executionTime) {
-                return ProposalState.Expired;
+        // Post-voting, pre-execution checks
+        if (proposal.timelockId != bytes32(0)) {
+            // Proposal has been scheduled with the Timelock
+            if (timelock.isOperationDone(proposal.timelockId)) {
+                 // This state implies executeProposal was called and Timelock completed it.
+                 // If this is true, proposal.executed should also be true.
+                 // However, if someone executed directly on timelock, this ensures correct state.
+                return ProposalState.Executed;
             }
-            return ProposalState.Queued;
+            if (timelock.isOperationReady(proposal.timelockId)) {
+                return ProposalState.Queued; // Ready for execution via executeProposal
+            }
+            if (timelock.isOperationPending(proposal.timelockId)) {
+                return ProposalState.Queued; // Waiting for minDelay to pass
+            }
+            // If it was scheduled but is not pending, not ready, and not done,
+            // it might have been cancelled directly on the timelock.
+            // TimelockController doesn't have an explicit "expired" state for operations past minDelay but not executed.
+            // It remains "ready" indefinitely.
+            // If it's not found (e.g. after a successful execution and then state cleanup by Timelock),
+            // then it might also not be pending/ready/done.
+            // This could also mean it was cancelled on timelock.
+            // For simplicity, if it's not Done, Ready, or Pending, but has a timelockId,
+            // we'll assume it's still in a Queued-like state or its status is solely on the timelock.
+            // A more robust system might track timelock cancellations.
+            return ProposalState.Queued; // Default for known timelockId not yet fully executed
         }
         
-        // At this point, voting has ended but no definitive state yet
-        // The VotingCore contract determines if it passed or failed based on vote counts
-        // This will return a default value, as actual state depends on votes
-        return ProposalState.Defeated; // Default, VotingCore will verify votes
+        // At this point, voting has ended, it's not canceled, not executed, and not scheduled with Timelock.
+        // This implies it was Defeated (vote failed) or Succeeded but not yet queued.
+        // VotingCore is responsible for determining if a vote passed and then calling queueProposal.
+        // If it's past endBlock and not queued, it's likely Defeated.
+        return ProposalState.Defeated;
     }
     
     /**

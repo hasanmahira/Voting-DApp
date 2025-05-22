@@ -58,7 +58,7 @@ touch VotingCore.sol ProposalManager.sol Delegation.sol TokenRegistry.sol
 ### Week 3: Advanced Contract Features & Testing
 
 #### Day 1-3: Advanced Features
-- [ ] Implement time-locked execution for proposals
+- [x] Implement time-locked execution for proposals
 - [ ] Add quadratic voting mechanism
 - [ ] Build multi-signature controls for admin functions
 - [ ] Integrate on-chain verification patterns
