@@ -9,6 +9,7 @@ interface IVotingCore {
     // Events
     event ProposalCreated(uint256 proposalId, address proposer, string title);
     event VoteCast(address voter, uint256 proposalId, uint8 support, uint256 weight);
+    event ProposalQueuedForTimelock(uint256 indexed proposalId); // New event
     event ProposalExecuted(uint256 proposalId);
     
     // Structs
@@ -23,6 +24,7 @@ interface IVotingCore {
         uint256 forVotes;
         uint256 againstVotes;
         uint256 abstainVotes;
+        bool queued; // Add new field
         bool executed;
     }
     
@@ -50,7 +52,9 @@ interface IVotingCore {
         string memory reason
     ) external returns (uint256);
     
-    function executeProposal(uint256 proposalId) external;
+    function processProposalVoteOutcomeAndQueue(uint256 proposalId) external; // Renamed from executeProposal
+    
+    function executeQueuedProposal(uint256 proposalId) external; // New function
     
     function getProposalDetails(uint256 proposalId) external view returns (
         uint256 id,
@@ -63,6 +67,7 @@ interface IVotingCore {
         uint256 forVotes,
         uint256 againstVotes,
         uint256 abstainVotes,
+            bool queued, // Add new field to return tuple
         bool executed
     );
     

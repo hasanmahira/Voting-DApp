@@ -47,17 +47,34 @@ interface ITokenRegistry {
     function setTokenWeight(address tokenAddress, uint256 weight) external;
     
     /**
-     * @notice Get the voting power for an account
-     * @param account The address to get voting power for
-     * @return The voting power of the account
+     * @notice Get the raw (linear) voting power for an account based on token holdings and weights.
+     * @param account The address to get raw voting power for.
+     * @return The raw voting power of the account.
+     */
+    function getRawVotingPower(address account) external view returns (uint256);
+
+    /**
+     * @notice Get the raw (linear) voting power for an account at a specific block.
+     * @param account The address to get raw voting power for.
+     * @param blockNumber The block number to get raw voting power at.
+     * @return The raw voting power of the account at the given block.
+     */
+    function getRawVotingPowerAtBlock(address account, uint256 blockNumber) external view returns (uint256);
+
+    /**
+     * @notice Get the quadratic voting power for an account.
+     * @dev Calculates sqrt(rawVotingPower).
+     * @param account The address to get voting power for.
+     * @return The quadratic voting power of the account.
      */
     function getVotingPower(address account) external view returns (uint256);
     
     /**
-     * @notice Get the voting power for an account at a specific block
-     * @param account The address to get voting power for
-     * @param blockNumber The block number to get voting power at
-     * @return The voting power of the account at the given block
+     * @notice Get the quadratic voting power for an account at a specific block.
+     * @dev Calculates sqrt(rawVotingPowerAtBlock).
+     * @param account The address to get voting power for.
+     * @param blockNumber The block number to get voting power at.
+     * @return The quadratic voting power of the account at the given block.
      */
     function getVotingPowerAtBlock(address account, uint256 blockNumber) external view returns (uint256);
     

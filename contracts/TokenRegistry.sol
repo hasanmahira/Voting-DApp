@@ -4,6 +4,7 @@ pragma solidity ^0.8.0;
 import "./interfaces/ITokenRegistry.sol";
 import "./interfaces/IDelegation.sol";
 import "@openzeppelin/contracts/access/AccessControl.sol";
+import "@openzeppelin/contracts/utils/math/Math.sol"; // Added for Math.sqrt()
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import "@openzeppelin/contracts/token/ERC1155/IERC1155.sol";
@@ -173,23 +174,52 @@ contract TokenRegistry is ITokenRegistry, AccessControl {
     }
     
     /**
-     * @notice Gets the voting power for an account
-     * @param account The address to get voting power for
-     * @return The voting power of the account
+     * @notice Gets the raw (linear) voting power for an account based on token holdings and weights.
+     * @param account The address to get raw voting power for.
+     * @return The raw voting power of the account.
      */
-    function getVotingPower(address account) external view override returns (uint256) {
-        return _calculateVotingPower(account, block.number, false);
+    function getRawVotingPower(address account) public view override returns (uint256) {
+        return _calculateRawVotingPower(account, block.number, false);
     }
     
     /**
-     * @notice Gets the voting power for an account at a specific block
-     * @param account The address to get voting power for
-     * @param blockNumber The block number to get voting power at
-     * @return The voting power of the account at the given block
+     * @notice Gets the raw (linear) voting power for an account at a specific block.
+     * @param account The address to get raw voting power for.
+     * @param blockNumber The block number to get raw voting power at.
+     * @return The raw voting power of the account at the given block.
      */
-    function getVotingPowerAtBlock(address account, uint256 blockNumber) external view override returns (uint256) {
+    function getRawVotingPowerAtBlock(address account, uint256 blockNumber) public view override returns (uint256) {
         require(blockNumber < block.number, "TokenRegistry: block not yet mined");
-        return _calculateVotingPower(account, blockNumber, true);
+        return _calculateRawVotingPower(account, blockNumber, true);
+    }
+
+    /**
+     * @notice Gets the quadratic voting power for an account.
+     * @dev Calculates sqrt(rawVotingPower).
+     * @param account The address to get voting power for.
+     * @return The quadratic voting power of the account.
+     */
+    function getVotingPower(address account) public view override returns (uint256) {
+        uint256 rawPower = getRawVotingPower(account);
+        if (rawPower == 0) {
+            return 0;
+        }
+        return Math.sqrt(rawPower);
+    }
+    
+    /**
+     * @notice Gets the quadratic voting power for an account at a specific block.
+     * @dev Calculates sqrt(rawVotingPowerAtBlock).
+     * @param account The address to get voting power for.
+     * @param blockNumber The block number to get voting power at.
+     * @return The quadratic voting power of the account at the given block.
+     */
+    function getVotingPowerAtBlock(address account, uint256 blockNumber) public view override returns (uint256) {
+        uint256 rawPowerAtBlock = getRawVotingPowerAtBlock(account, blockNumber);
+        if (rawPowerAtBlock == 0) {
+            return 0;
+        }
+        return Math.sqrt(rawPowerAtBlock);
     }
     
     /**
@@ -238,8 +268,11 @@ contract TokenRegistry is ITokenRegistry, AccessControl {
         
         // Update delegation if needed
         if (address(delegation) != address(0)) {
-            uint256 votingPower = _calculateVotingPower(account, blockNumber, false);
-            delegation.updateVotingPower(account, votingPower);
+            // Delegation should work with raw voting power, not quadratic,
+            // unless the delegation contract itself is designed for quadratic.
+            // Assuming delegation.updateVotingPower expects raw power.
+            uint256 rawVotingPower = _calculateRawVotingPower(account, blockNumber, false);
+            delegation.updateVotingPower(account, rawVotingPower);
         }
     }
     
@@ -271,10 +304,10 @@ contract TokenRegistry is ITokenRegistry, AccessControl {
      * @param account The account to calculate voting power for
      * @param blockNumber The block number to calculate at
      * @param useSnapshot Whether to use snapshot data
-     * @return The voting power
+     * @return The raw voting power
      */
-    function _calculateVotingPower(address account, uint256 blockNumber, bool useSnapshot) internal view returns (uint256) {
-        uint256 totalVotingPower = 0;
+    function _calculateRawVotingPower(address account, uint256 blockNumber, bool useSnapshot) internal view returns (uint256) {
+        uint256 totalRawVotingPower = 0;
         
         for (uint256 i = 0; i < _supportedTokens.length; i++) {
             address token = _supportedTokens[i];
@@ -292,10 +325,10 @@ contract TokenRegistry is ITokenRegistry, AccessControl {
                 }
                 
                 // Apply token weight
-                totalVotingPower += balance * info.weight;
+                totalRawVotingPower += balance * info.weight;
             }
         }
         
-        return totalVotingPower;
+        return totalRawVotingPower;
     }
 }
